@@ -24,6 +24,10 @@ cd src-tauri && cargo test --test record_smoke -- --ignored   # recorder test (n
 ```
 
 Screenshots are saved to `~/Pictures/Glintshot/` and recordings (MP4, 60 fps) to `~/Videos/Glintshot/`; folders are mode 700, files 600.
+Glintshot runs in the tray (closing the window hides it). Global hotkeys on X11:
+**Ctrl+Alt+S** screenshot region, **Ctrl+Alt+R** record region / stop recording.
+`cd src-tauri && cargo run --bin hotkey_probe` reports which hotkeys are free or held by another app.
+
 Recording uses FFmpeg with Intel/AMD GPU encoding (VA-API) and falls back to libx264; set `GLINTSHOT_ENCODER=x264` to force the fallback.
 
 ## Status

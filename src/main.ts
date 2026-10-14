@@ -20,6 +20,12 @@ interface RecordingStarted {
   height: number;
 }
 
+interface HotkeyStatus {
+  keys: string;
+  action: string;
+  error: string | null;
+}
+
 interface RecordingFinished {
   path: string;
   encoder: string;
@@ -84,26 +90,55 @@ async function capture(mode: "screenshot" | "record") {
   }
 }
 
+function showRecordingResult(r: RecordingFinished) {
+  showResult("Last recording", [
+    ["Saved to", r.path],
+    ["Area", `${r.width} × ${r.height} px`],
+    ["Length", `${r.seconds.toFixed(1)} s`],
+    ["Size", `${(r.bytes / 1048576).toFixed(1)} MB`],
+    ["Encoder", ENCODER_NAMES[r.encoder] ?? r.encoder],
+  ]);
+}
+
+// The result arrives as a `recording-stopped` event, the same way as when
+// stopping from the tray or hotkey; errors arrive as `capture-error`.
 async function stopRecording() {
   const button = $<HTMLButtonElement>("stop-btn");
   button.disabled = true;
   button.textContent = "Saving…";
   try {
-    const r = await invoke<RecordingFinished>("stop_recording");
-    showResult("Last recording", [
-      ["Saved to", r.path],
-      ["Area", `${r.width} × ${r.height} px`],
-      ["Length", `${r.seconds.toFixed(1)} s`],
-      ["Size", `${(r.bytes / 1048576).toFixed(1)} MB`],
-      ["Encoder", ENCODER_NAMES[r.encoder] ?? r.encoder],
-    ]);
-  } catch (e) {
-    showError(`${e}`);
+    await invoke("stop_recording");
+  } catch {
+    // Already reported through the capture-error event.
   } finally {
     button.disabled = false;
     button.textContent = "Stop and save";
-    setRecording(false);
   }
+}
+
+function formatKeys(keys: string) {
+  return keys
+    .split("+")
+    .map((k) => k.charAt(0).toUpperCase() + k.slice(1))
+    .join("+");
+}
+
+async function loadHotkeys() {
+  const list = $("hotkeys");
+  const hotkeys = await invoke<HotkeyStatus[]>("hotkeys");
+  list.replaceChildren(
+    ...hotkeys.map((h) => {
+      const li = document.createElement("li");
+      const kbd = document.createElement("kbd");
+      kbd.textContent = formatKeys(h.keys);
+      li.append(kbd, ` ${h.action}`);
+      if (h.error) {
+        li.classList.add("error");
+        li.append(` (unavailable: ${h.error})`);
+      }
+      return li;
+    }),
+  );
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -131,5 +166,8 @@ window.addEventListener("DOMContentLoaded", () => {
       `${payload.width} × ${payload.height} px · ${ENCODER_NAMES[payload.encoder] ?? payload.encoder}`;
     setRecording(true);
   });
+  listen("recording-ended", () => setRecording(false));
+  listen<RecordingFinished>("recording-stopped", ({ payload }) => showRecordingResult(payload));
   listen<string>("capture-error", ({ payload }) => showError(payload));
+  loadHotkeys().catch((e) => showError(`Could not read hotkeys: ${e}`));
 });
