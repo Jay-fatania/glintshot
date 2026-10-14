@@ -2,7 +2,7 @@
 
 Cross-platform screenshot and screen-recording app (Tauri 2 + Rust).
 This is the milestone 0 spike: region screenshots on Linux X11 plus a capture benchmark.
-See [docs/SPEC.md](docs/SPEC.md) for the full plan.
+See [docs/SPEC.md](docs/SPEC.md) for the full plan and [docs/spike-results.md](docs/spike-results.md) for measurements.
 
 ## Setup (Ubuntu 22.04)
 
@@ -19,6 +19,7 @@ npm install
 ```sh
 npm run tauri dev                      # app with hot reload
 cd src-tauri && cargo run --release --bin capture_bench 10   # capture benchmark
+scripts/record_bench.sh 15            # recording/encoder benchmark (covers primary monitor)
 ```
 
 Screenshots are saved to `~/Pictures/Glintshot/` (folder mode 700, files 600).
