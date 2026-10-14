@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Glintshot</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="container">
+      <h1>Glintshot</h1>
+      <p class="subtitle">Spike build: region capture</p>
+
+      <button id="capture-btn" type="button">Capture region</button>
+      <p class="hint">Drag to select; releasing the mouse saves. Esc cancels.</p>
+
+      <section id="result" hidden>
+        <h2>Last capture</h2>
+        <dl>
+          <dt>Saved to</dt><dd id="r-path"></dd>
+          <dt>Region</dt><dd id="r-size"></dd>
+          <dt>Screen grab</dt><dd id="r-capture"></dd>
+          <dt>Crop + save</dt><dd id="r-save"></dd>
+        </dl>
+      </section>
+      <p id="error" class="error" hidden></p>
+    </main>
+  </body>
+</html>
