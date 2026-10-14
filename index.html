@@ -11,27 +11,82 @@
   <body>
     <main class="container">
       <h1>Glintshot</h1>
-      <p class="subtitle">Phase 1 build: capture, annotate, record</p>
 
-      <div id="idle-controls" class="row">
-        <button id="capture-btn" type="button">Screenshot region</button>
-        <button id="record-btn" type="button">Record region</button>
-      </div>
-      <p id="hint" class="hint">Screenshot: drag a region, annotate, then Save (Enter) or Copy (Ctrl+C). Record: releasing the mouse starts recording. Esc cancels.</p>
-      <ul id="hotkeys" class="hotkeys"></ul>
+      <nav class="tabs" role="tablist">
+        <button id="tab-capture" class="tab active" type="button" role="tab" aria-selected="true">Capture</button>
+        <button id="tab-settings" class="tab" type="button" role="tab" aria-selected="false">Settings</button>
+      </nav>
 
-      <section id="recording" hidden>
-        <p class="rec-status"><span class="rec-dot"></span> Recording <span id="rec-time">0:00</span></p>
-        <p id="rec-detail" class="hint"></p>
-        <button id="stop-btn" type="button">Stop and save</button>
-        <p class="hint">You can also stop from the tray icon or with Ctrl+Alt+R.</p>
+      <section id="panel-capture" role="tabpanel">
+        <div id="idle-controls" class="row">
+          <button id="capture-btn" type="button">Screenshot</button>
+          <button id="record-btn" type="button">Record</button>
+        </div>
+        <p id="hint" class="hint">
+          Drag an area, click a window, or press F for the full screen. Screenshots open the editor; recordings
+          start straight away. Esc cancels.
+        </p>
+        <ul id="hotkeys" class="hotkeys"></ul>
+
+        <section id="recording" hidden>
+          <p class="rec-status"><span class="rec-dot"></span> Recording <span id="rec-time">0:00</span></p>
+          <p id="rec-detail" class="hint"></p>
+          <button id="stop-btn" type="button">Stop and save</button>
+          <p id="stop-hint" class="hint">You can also stop from the tray icon or with the record hotkey.</p>
+        </section>
+
+        <section id="result" hidden>
+          <h2 id="r-title">Last capture</h2>
+          <dl id="r-list"></dl>
+        </section>
+        <p id="error" class="error" hidden></p>
       </section>
 
-      <section id="result" hidden>
-        <h2 id="r-title">Last capture</h2>
-        <dl id="r-list"></dl>
-      </section>
-      <p id="error" class="error" hidden></p>
+      <form id="panel-settings" class="settings" role="tabpanel" hidden>
+        <fieldset>
+          <legend>Save locations</legend>
+          <label for="s-screenshot-dir">Screenshots</label>
+          <div class="field-row">
+            <input id="s-screenshot-dir" type="text" spellcheck="false" required />
+            <button type="button" data-browse="s-screenshot-dir">Browse…</button>
+          </div>
+          <label for="s-recording-dir">Recordings</label>
+          <div class="field-row">
+            <input id="s-recording-dir" type="text" spellcheck="false" required />
+            <button type="button" data-browse="s-recording-dir">Browse…</button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Hotkeys</legend>
+          <label for="s-screenshot-hotkey">Screenshot</label>
+          <button id="s-screenshot-hotkey" class="hotkey-field" type="button"></button>
+          <label for="s-record-hotkey">Record / stop recording</label>
+          <button id="s-record-hotkey" class="hotkey-field" type="button"></button>
+          <p class="hint">Click a hotkey, then press the new combination (Esc cancels).</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Behaviour</legend>
+          <label for="s-enter-action">Enter in the editor</label>
+          <select id="s-enter-action">
+            <option value="save">Save and copy</option>
+            <option value="copy">Copy only</option>
+          </select>
+          <label for="s-fps">Recording frame rate</label>
+          <select id="s-fps">
+            <option value="30">30 fps (smaller files)</option>
+            <option value="60">60 fps (smoother)</option>
+          </select>
+          <label class="check"><input id="s-start-at-login" type="checkbox" /> Start Glintshot when I log in</label>
+        </fieldset>
+
+        <div class="settings-actions">
+          <button id="s-reset" type="button">Discard changes</button>
+          <button id="s-save" type="submit" class="primary">Save settings</button>
+        </div>
+        <p id="s-status" class="hint" role="status"></p>
+      </form>
     </main>
   </body>
 </html>

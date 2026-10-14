@@ -16,7 +16,7 @@ fn records_a_region_to_mp4() {
 
     // Odd size on purpose: the recorder must round down to even dimensions.
     let rect = Rect { x: 100, y: 100, width: 641, height: 361 };
-    let rec = recording::start(rect, &dir, &dir).expect("recording should start");
+    let rec = recording::start(rect, &dir, &dir, 60).expect("recording should start");
     println!("encoder: {:?}", rec.encoder);
     thread::sleep(Duration::from_secs(3));
     let done = rec.stop().expect("recording should finish");

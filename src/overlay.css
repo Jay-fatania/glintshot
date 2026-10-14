@@ -134,3 +134,29 @@ canvas {
   outline: none;
   overflow: hidden;
 }
+
+#hint-bar {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: rgba(24, 24, 32, 0.9);
+  color: #e9e7f5;
+  font: 13px/1.4 system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+#hint-bar[hidden] {
+  display: none;
+}
+
+#hint-bar kbd {
+  padding: 0 5px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  font: 12px ui-monospace, monospace;
+}

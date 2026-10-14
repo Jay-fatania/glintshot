@@ -15,8 +15,9 @@
       {
         "label": "main",
         "title": "Glintshot",
-        "width": 520,
-        "height": 420
+        "width": 580,
+        "height": 640,
+        "visible": false
       }
     ],
     "security": {

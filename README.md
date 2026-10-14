@@ -20,16 +20,23 @@ npm install
 npm run tauri dev                      # app with hot reload
 cd src-tauri && cargo run --release --bin capture_bench 10   # capture benchmark
 scripts/record_bench.sh 15            # recording/encoder benchmark (covers primary monitor)
+cd src-tauri && cargo test                              # unit tests
 cd src-tauri && cargo test --test record_smoke -- --ignored   # recorder test (needs X11)
+cd src-tauri && cargo run --bin window_list             # windows the overlay can pick
 ```
 
-Screenshots are saved to `~/Pictures/Glintshot/` and recordings (MP4, 60 fps) to `~/Videos/Glintshot/`; folders are mode 700, files 600.
+By default screenshots go to `~/Pictures/Glintshot/` and recordings (MP4) to `~/Videos/Glintshot/`. Folders Glintshot creates are mode 700; files are 600.
 After selecting a screenshot region, an editor toolbar offers arrow, rectangle, ellipse, text,
 highlight, numbered markers, solid redaction and pixelate, with undo/redo, colours and sizes.
 **Enter** saves the PNG and copies it; **Ctrl+C** copies only.
 
-Glintshot runs in the tray (closing the window hides it). Global hotkeys on X11:
-**Ctrl+Alt+S** screenshot region, **Ctrl+Alt+R** record region / stop recording.
+In the capture overlay: drag an area, click a window, or press **F** for the full screen.
+
+Glintshot runs in the tray (closing the window hides it). Default global hotkeys on X11:
+**Ctrl+Alt+S** screenshot, **Ctrl+Alt+R** record / stop recording.
+
+The **Settings** tab sets save folders, hotkeys, what Enter does in the editor, recording frame rate
+(30/60 fps) and start at login. Settings live in `~/.config/app.glintshot.spike/settings.json`.
 `cd src-tauri && cargo run --bin hotkey_probe` reports which hotkeys are free or held by another app.
 
 Recording uses FFmpeg with Intel/AMD GPU encoding (VA-API) and falls back to libx264; set `GLINTSHOT_ENCODER=x264` to force the fallback.

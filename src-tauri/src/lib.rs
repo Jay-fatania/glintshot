@@ -11,18 +11,21 @@ use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{
     AppHandle, Emitter, Manager, Monitor, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry,
 };
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 pub mod capture;
 pub mod recording;
+pub mod settings;
+
+use settings::Settings;
 
 const MAIN_LABEL: &str = "main";
 const OVERLAY_LABEL: &str = "overlay";
 const TRAY_ID: &str = "glintshot";
 
-/// Global hotkeys. The record hotkey also stops a running recording.
-const SCREENSHOT_HOTKEY: &str = "ctrl+alt+s";
-const RECORD_HOTKEY: &str = "ctrl+alt+r";
+/// Passed by the login item so Glintshot starts hidden in the tray.
+const BACKGROUND_ARG: &str = "--background";
 
 #[derive(Clone, Copy, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -41,11 +44,22 @@ struct CaptureState {
     origin: Mutex<(i32, i32)>,
     recording: Mutex<Option<recording::Recording>>,
     hotkeys: Mutex<Vec<HotkeyStatus>>,
+    /// Windows on the captured monitor (image pixels, topmost first).
+    windows: Mutex<Vec<PickableWindow>>,
     /// How long the last screen grab took, for the result panel.
     capture_ms: Mutex<f64>,
     /// Kept alive for the whole run: on Linux the app itself serves the
     /// clipboard contents, so they vanish if this is dropped.
     clipboard: Mutex<Option<arboard::Clipboard>>,
+}
+
+struct SettingsState {
+    path: PathBuf,
+    settings: Mutex<Settings>,
+}
+
+fn current_settings(app: &AppHandle) -> Settings {
+    app.state::<SettingsState>().settings.lock().unwrap().clone()
 }
 
 /// Tray menu entries whose enabled state follows the recording state.
@@ -61,6 +75,17 @@ struct HotkeyStatus {
     action: String,
     /// None when registered; otherwise why it failed (e.g. taken by another app).
     error: Option<String>,
+}
+
+/// A window the overlay can select by clicking, in image pixels relative to
+/// the captured monitor and clipped to it.
+#[derive(Clone, Serialize)]
+struct PickableWindow {
+    title: String,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Serialize)]
@@ -123,9 +148,14 @@ async fn begin_capture(app: &AppHandle, mode: CaptureMode) -> Result<CaptureInfo
         width: monitor.size().width,
         height: monitor.size().height,
     };
+    let capturer = capture::Capturer::new()?;
     let started = Instant::now();
-    let frame = capture::capture_rect(rect)?;
+    let frame = capturer.capture(rect)?;
     let capture_ms = started.elapsed().as_secs_f64() * 1000.0;
+    // Listed right after the grab so they match the frozen frame. Failure
+    // only disables click-to-select, so it isn't fatal.
+    let windows = capturer.windows().unwrap_or_default();
+    *state.windows.lock().unwrap() = pickable_windows(&windows, rect);
 
     let info = CaptureInfo {
         width: frame.width(),
@@ -152,6 +182,34 @@ async fn begin_capture(app: &AppHandle, mode: CaptureMode) -> Result<CaptureInfo
         .map_err(|e| e.to_string())?;
 
     Ok(info)
+}
+
+/// Converts desktop windows to monitor-relative image pixels, clipped to the
+/// monitor, dropping any that are tiny or off this monitor.
+fn pickable_windows(windows: &[capture::WindowInfo], monitor: capture::Rect) -> Vec<PickableWindow> {
+    let (mx, my) = (monitor.x as i64, monitor.y as i64);
+    let (mw, mh) = (monitor.width as i64, monitor.height as i64);
+    windows
+        .iter()
+        .filter_map(|w| {
+            let left = (w.rect.x as i64 - mx).max(0);
+            let top = (w.rect.y as i64 - my).max(0);
+            let right = (w.rect.x as i64 + w.rect.width as i64 - mx).min(mw);
+            let bottom = (w.rect.y as i64 + w.rect.height as i64 - my).min(mh);
+            (right - left >= 16 && bottom - top >= 16).then(|| PickableWindow {
+                title: w.title.clone(),
+                x: left as u32,
+                y: top as u32,
+                width: (right - left) as u32,
+                height: (bottom - top) as u32,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn get_windows(state: State<'_, CaptureState>) -> Vec<PickableWindow> {
+    state.windows.lock().unwrap().clone()
 }
 
 /// Starts a capture from the tray or a hotkey. There is no caller to return
@@ -183,9 +241,18 @@ fn get_frame(state: State<'_, CaptureState>) -> Result<Response, String> {
     Ok(Response::new(bytes))
 }
 
+#[derive(Serialize)]
+struct OverlayConfig {
+    mode: CaptureMode,
+    enter_action: settings::EnterAction,
+}
+
 #[tauri::command]
-fn capture_mode(state: State<'_, CaptureState>) -> CaptureMode {
-    *state.mode.lock().unwrap()
+fn overlay_config(app: AppHandle, state: State<'_, CaptureState>) -> OverlayConfig {
+    OverlayConfig {
+        mode: *state.mode.lock().unwrap(),
+        enter_action: current_settings(&app).enter_action,
+    }
 }
 
 /// Receives the finished screenshot (selection with annotations drawn, as raw
@@ -220,7 +287,8 @@ fn finish_screenshot(
     let image = RgbaImage::from_raw(width, height, bytes.clone()).ok_or("image size does not match its data")?;
 
     let path = if save {
-        let dir = private_dir(app.path().picture_dir().map_err(|e| e.to_string())?)?;
+        let dir = current_settings(&app).screenshot_dir;
+        settings::ensure_dir(&dir)?;
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -300,9 +368,12 @@ async fn start_recording(
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let dir = private_dir(app.path().video_dir().map_err(|e| e.to_string())?)?;
+    let config = current_settings(&app);
+    let dir = config.recording_dir;
+    settings::ensure_dir(&dir)?;
+    let fps = config.recording_fps;
     let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
-    let started = tauri::async_runtime::spawn_blocking(move || recording::start(rect, &dir, &log_dir))
+    let started = tauri::async_runtime::spawn_blocking(move || recording::start(rect, &dir, &log_dir, fps))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -400,9 +471,10 @@ fn set_recording_ui(app: &AppHandle, active: bool) {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
-    let screenshot = MenuItem::with_id(app, "screenshot", "Screenshot region", true, Some("Ctrl+Alt+S"))?;
-    let record = MenuItem::with_id(app, "record", "Record region", true, Some("Ctrl+Alt+R"))?;
-    let stop = MenuItem::with_id(app, "stop", "Stop recording", false, Some("Ctrl+Alt+R"))?;
+    // No accelerator labels: hotkeys are configurable and listed in the window.
+    let screenshot = MenuItem::with_id(app, "screenshot", "Screenshot", true, None::<&str>)?;
+    let record = MenuItem::with_id(app, "record", "Record", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", "Stop recording", false, None::<&str>)?;
     let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Glintshot", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
@@ -427,26 +499,79 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
     builder.build(app)
 }
 
-/// Registers the global hotkeys, remembering which ones failed (for example
-/// because another app already owns the key combination).
+/// (Re-)registers the hotkeys from settings, remembering which ones failed
+/// (for example because another app already owns the key combination).
 fn register_hotkeys(app: &AppHandle) {
-    let wanted = [
-        (SCREENSHOT_HOTKEY, "Screenshot region"),
-        (RECORD_HOTKEY, "Record region / stop recording"),
-    ];
-    let statuses = wanted
-        .iter()
-        .map(|(keys, action)| HotkeyStatus {
-            keys: keys.to_string(),
-            action: action.to_string(),
-            error: app.global_shortcut().register(*keys).err().map(|e| e.to_string()),
-        })
-        .collect();
+    let config = current_settings(app);
+    let shortcuts = app.global_shortcut();
+    let _ = shortcuts.unregister_all();
+    let statuses = [
+        (config.screenshot_hotkey, "Screenshot"),
+        (config.record_hotkey, "Record / stop recording"),
+    ]
+    .into_iter()
+    .map(|(keys, action)| {
+        let error = settings::parse_hotkey(&keys)
+            .and_then(|shortcut| shortcuts.register(shortcut).map_err(|e| e.to_string()))
+            .err();
+        HotkeyStatus { keys, action: action.to_string(), error }
+    })
+    .collect();
     *app.state::<CaptureState>().hotkeys.lock().unwrap() = statuses;
 }
 
+/// Lets the settings screen record a new combination without the current
+/// hotkeys firing (X11 grabs would otherwise swallow the key press).
+#[tauri::command]
+fn pause_hotkeys(app: AppHandle, paused: bool) {
+    if paused {
+        let _ = app.global_shortcut().unregister_all();
+    } else {
+        register_hotkeys(&app);
+    }
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Settings {
+    let mut config = current_settings(&app);
+    if let Ok(enabled) = app.autolaunch().is_enabled() {
+        config.start_at_login = enabled;
+    }
+    config
+}
+
+#[derive(Serialize)]
+struct SettingsSaved {
+    settings: Settings,
+    hotkeys: Vec<HotkeyStatus>,
+}
+
+/// Validates and applies new settings: output folders, login item, hotkeys.
+/// Nothing is stored unless every step succeeds.
+#[tauri::command]
+fn save_settings(app: AppHandle, settings: Settings) -> Result<SettingsSaved, String> {
+    settings.validate()?;
+    settings::ensure_dir(&settings.screenshot_dir)?;
+    settings::ensure_dir(&settings.recording_dir)?;
+
+    let autolaunch = app.autolaunch();
+    if autolaunch.is_enabled().unwrap_or(!settings.start_at_login) != settings.start_at_login {
+        let result = if settings.start_at_login { autolaunch.enable() } else { autolaunch.disable() };
+        result.map_err(|e| format!("Could not change start at login: {e}"))?;
+    }
+
+    let state = app.state::<SettingsState>();
+    settings::save(&state.path, &settings)?;
+    *state.settings.lock().unwrap() = settings.clone();
+    register_hotkeys(&app);
+    Ok(SettingsSaved {
+        settings,
+        hotkeys: app.state::<CaptureState>().hotkeys.lock().unwrap().clone(),
+    })
+}
+
 fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
-    let is_record = RECORD_HOTKEY.parse::<Shortcut>().is_ok_and(|s| s == *shortcut);
+    let is_record = settings::parse_hotkey(&current_settings(app).record_hotkey).is_ok_and(|s| s == *shortcut);
     let recording = app.state::<CaptureState>().recording.lock().unwrap().is_some();
     match (is_record, recording) {
         (true, true) => spawn_finish_recording(app),
@@ -459,16 +584,19 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
     }
 }
 
-/// `<base>/Glintshot`, created readable only by the current user.
-fn private_dir(base: PathBuf) -> Result<PathBuf, String> {
-    let dir = base.join("Glintshot");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+/// Loads settings (defaults: ~/Pictures/Glintshot and ~/Videos/Glintshot).
+fn init_settings(app: &AppHandle) -> tauri::Result<()> {
+    let paths = app.path();
+    let home = paths.home_dir()?;
+    let pictures = paths.picture_dir().unwrap_or_else(|_| home.join("Pictures"));
+    let videos = paths.video_dir().unwrap_or_else(|_| home.join("Videos"));
+    let path = paths.app_config_dir()?.join("settings.json");
+    let mut loaded = settings::load(&path, Settings::defaults(&pictures, &videos));
+    if let Ok(enabled) = app.autolaunch().is_enabled() {
+        loaded.start_at_login = enabled;
     }
-    Ok(dir)
+    app.manage(SettingsState { path, settings: Mutex::new(loaded) });
+    Ok(())
 }
 
 /// Writes to a temporary file first, then renames, so a crash never leaves a
@@ -499,21 +627,33 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![BACKGROUND_ARG])))
         .manage(CaptureState::default())
         .setup(|app| {
+            init_settings(app.handle())?;
             build_tray(app.handle())?;
             register_hotkeys(app.handle());
+            // The window starts hidden (see tauri.conf.json) so a login start
+            // stays in the tray without flashing it.
+            if !std::env::args().any(|a| a == BACKGROUND_ARG) {
+                show_main(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             start_capture,
             get_frame,
-            capture_mode,
+            overlay_config,
+            get_windows,
             finish_screenshot,
             cancel_capture,
             start_recording,
             stop_recording,
-            hotkeys
+            hotkeys,
+            pause_hotkeys,
+            get_settings,
+            save_settings
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

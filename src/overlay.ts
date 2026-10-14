@@ -14,6 +14,7 @@ import {
 const frameCanvas = document.getElementById("frame") as HTMLCanvasElement;
 const uiCanvas = document.getElementById("ui") as HTMLCanvasElement;
 const sizeLabel = document.getElementById("size-label") as HTMLDivElement;
+const hintBar = document.getElementById("hint-bar") as HTMLDivElement;
 const ui = uiCanvas.getContext("2d")!;
 
 const COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#a855f7", "#111827", "#ffffff"];
@@ -54,11 +55,20 @@ const TOOL_INFO: Record<Tool, { label: string; key: string; icon: string }> = {
 let imageWidth = 0;
 let imageHeight = 0;
 let mode: "screenshot" | "record" = "screenshot";
+/** What Enter does in the editor (from settings). */
+let enterAction: "save" | "copy" = "save";
 let phase: "select" | "edit" = "select";
 let busy = false;
 
 let dragStart: Point | null = null;
 let selection: Rect | null = null;
+
+interface PickableWindow extends Rect {
+  title: string;
+}
+/** Windows on this monitor, topmost first, for click-to-select. */
+let windows: PickableWindow[] = [];
+let hoverWindow: PickableWindow | null = null;
 
 const annotations = new Annotations();
 /** The drag shape being drawn, not yet committed. */
@@ -103,7 +113,7 @@ function draw() {
   ui.fillStyle = "rgba(0, 0, 0, 0.45)";
   ui.fillRect(0, 0, imageWidth, imageHeight);
   if (!selection) {
-    sizeLabel.hidden = true;
+    drawHoverWindow();
     return;
   }
   const { x, y, width, height } = selection;
@@ -129,9 +139,34 @@ function draw() {
   sizeLabel.hidden = false;
 }
 
+/** Highlights the window under the cursor before anything is selected. */
+function drawHoverWindow() {
+  if (!hoverWindow) {
+    sizeLabel.hidden = true;
+    return;
+  }
+  const { x, y, width, height, title } = hoverWindow;
+  ui.clearRect(x, y, width, height);
+  ui.strokeStyle = "#a78bfa";
+  ui.lineWidth = Math.max(2, Math.round(2 * scale()));
+  ui.strokeRect(x + ui.lineWidth / 2, y + ui.lineWidth / 2, width - ui.lineWidth, height - ui.lineWidth);
+  const css = toCss(hoverWindow);
+  sizeLabel.textContent = `${title || "Window"} · ${width} × ${height}`;
+  sizeLabel.style.left = `${css.x}px`;
+  sizeLabel.style.top = `${Math.max(0, css.y - 26)}px`;
+  sizeLabel.hidden = false;
+}
+
+function windowAt(p: Point) {
+  return windows.find((w) => inside(p, w)) ?? null;
+}
+
 async function loadFrame() {
-  mode = await invoke<"screenshot" | "record">("capture_mode");
+  const config = await invoke<{ mode: typeof mode; enter_action: typeof enterAction }>("overlay_config");
+  mode = config.mode;
+  enterAction = config.enter_action;
   if (mode === "record") document.title = "Glintshot: select recording area";
+  windows = await invoke<PickableWindow[]>("get_windows");
   const buffer = await invoke<ArrayBuffer>("get_frame");
   const header = new DataView(buffer, 0, 8);
   imageWidth = header.getUint32(0, true);
@@ -207,8 +242,8 @@ function buildToolbar() {
   actions.className = "group actions";
   actions.append(
     button("Cancel (Esc)", "Cancel", cancel, "action"),
-    button("Copy to clipboard (Ctrl+C)", "Copy", () => finish("copy"), "action"),
-    button("Save and copy (Ctrl+S or Enter)", "Save", () => finish("save"), "action primary"),
+    button(`Copy to clipboard (Ctrl+C${enterAction === "copy" ? " or Enter" : ""})`, "Copy", () => finish("copy"), "action"),
+    button(`Save and copy (Ctrl+S${enterAction === "save" ? " or Enter" : ""})`, "Save", () => finish("save"), "action primary"),
   );
 
   toolbar.append(tools, colors, sizes, history, actions);
@@ -414,6 +449,12 @@ window.addEventListener("mousemove", (e) => {
   if (phase === "select" && dragStart) {
     selection = rectFrom(dragStart, toImage(e));
     draw();
+  } else if (phase === "select") {
+    const hovered = windowAt(toImage(e));
+    if (hovered !== hoverWindow) {
+      hoverWindow = hovered;
+      draw();
+    }
   } else if (draft) {
     draft.b = clampToSelection(toImage(e));
     draw();
@@ -422,18 +463,14 @@ window.addEventListener("mousemove", (e) => {
 
 window.addEventListener("mouseup", (e) => {
   if (phase === "select" && dragStart) {
-    selection = rectFrom(dragStart, toImage(e));
+    const p = toImage(e);
+    const dragged = rectFrom(dragStart, p);
     dragStart = null;
-    // Ignore accidental clicks; anything at least 4 px each way counts.
-    if (selection.width < 4 || selection.height < 4) {
+    // A click (under 4 px of movement) selects the window under the cursor.
+    if (dragged.width >= 4 && dragged.height >= 4) acceptSelection(dragged);
+    else if (windowAt(p)) acceptSelection(windowAt(p)!);
+    else {
       selection = null;
-      draw();
-    } else if (mode === "record") {
-      draw();
-      startRecording();
-    } else {
-      phase = "edit";
-      buildToolbar();
       draw();
     }
     return;
@@ -447,10 +484,31 @@ window.addEventListener("mouseup", (e) => {
   }
 });
 
+/** Finishes the select phase: record mode starts recording, screenshots open the editor. */
+function acceptSelection(r: Rect) {
+  selection = { x: r.x, y: r.y, width: r.width, height: r.height };
+  hoverWindow = null;
+  hintBar.hidden = true;
+  if (mode === "record") {
+    draw();
+    startRecording();
+  } else {
+    phase = "edit";
+    buildToolbar();
+    draw();
+  }
+}
+
 window.addEventListener("keydown", (e) => {
   if (busy) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
+
+  if (phase === "select" && !dragStart && !ctrl && !e.altKey && key === "f") {
+    acceptSelection({ x: 0, y: 0, width: imageWidth, height: imageHeight });
+    e.preventDefault();
+    return;
+  }
 
   if (e.key === "Escape") {
     if (draft) {
@@ -466,7 +524,8 @@ window.addEventListener("keydown", (e) => {
   if (ctrl && key === "z" && !e.shiftKey) undo();
   else if (ctrl && (key === "y" || (key === "z" && e.shiftKey))) redo();
   else if (ctrl && key === "c") finish("copy");
-  else if ((ctrl && key === "s") || e.key === "Enter") finish("save");
+  else if (ctrl && key === "s") finish("save");
+  else if (e.key === "Enter") finish(enterAction);
   else if (!ctrl && !e.altKey && ["1", "2", "3"].includes(e.key)) setSize(Number(e.key) - 1);
   else {
     const match = ctrl || e.altKey ? undefined : (Object.keys(TOOL_INFO) as Tool[]).find((t) => TOOL_INFO[t].key === key);

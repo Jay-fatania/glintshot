@@ -15,7 +15,6 @@ use serde::Serialize;
 
 use crate::capture::Rect;
 
-const FPS: u32 = 60;
 const VAAPI_DEVICE: &str = "/dev/dri/renderD128";
 /// How long FFmpeg must survive after launch before we trust the encoder.
 const STARTUP_CHECK: Duration = Duration::from_millis(800);
@@ -62,7 +61,7 @@ pub struct Finished {
 /// Tries VA-API first, then libx264; set `GLINTSHOT_ENCODER=x264` to skip
 /// VA-API (useful for testing the fallback). Blocks for up to ~1.6 s while checking
 /// that FFmpeg actually started, so call it off the main thread.
-pub fn start(rect: Rect, dir: &Path, log_dir: &Path) -> Result<Recording, String> {
+pub fn start(rect: Rect, dir: &Path, log_dir: &Path, fps: u32) -> Result<Recording, String> {
     if !cfg!(target_os = "linux") {
         return Err("Recording is only supported on Linux (X11) in this build.".into());
     }
@@ -95,7 +94,7 @@ pub fn start(rect: Rect, dir: &Path, log_dir: &Path) -> Result<Recording, String
 
     let mut last_error = String::from("no encoder available");
     for encoder in encoders {
-        let mut child = spawn_ffmpeg(&display, rect, encoder, &part, &log)?;
+        let mut child = spawn_ffmpeg(&display, rect, fps, encoder, &part, &log)?;
         // FFmpeg records during the startup check, so the clock starts now.
         let started = Instant::now();
         thread::sleep(STARTUP_CHECK);
@@ -116,7 +115,7 @@ pub fn start(rect: Rect, dir: &Path, log_dir: &Path) -> Result<Recording, String
     Err(format!("Could not start recording. {last_error}"))
 }
 
-fn spawn_ffmpeg(display: &str, rect: Rect, encoder: Encoder, part: &Path, log: &Path) -> Result<Child, String> {
+fn spawn_ffmpeg(display: &str, rect: Rect, fps: u32, encoder: Encoder, part: &Path, log: &Path) -> Result<Child, String> {
     let log_file = File::create(log).map_err(|e| e.to_string())?;
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-hide_banner", "-loglevel", "error", "-nostats", "-y"]);
@@ -124,7 +123,7 @@ fn spawn_ffmpeg(display: &str, rect: Rect, encoder: Encoder, part: &Path, log: &
         cmd.args(["-vaapi_device", VAAPI_DEVICE]);
     }
     cmd.args(["-f", "x11grab", "-draw_mouse", "1"])
-        .args(["-framerate", &FPS.to_string()])
+        .args(["-framerate", &fps.to_string()])
         .args(["-video_size", &format!("{}x{}", rect.width, rect.height)])
         .args(["-i", &format!("{display}+{},{}", rect.x, rect.y)])
         .args(encoder.args())

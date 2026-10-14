@@ -5,8 +5,6 @@
 //! Linux Wayland: not implemented in the spike; needs the ScreenCast portal.
 //! Windows: xcap (Windows.Graphics.Capture / GDI).
 
-use image::RgbaImage;
-
 /// A rectangle in physical (device) pixels, in desktop coordinates.
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {
@@ -14,6 +12,15 @@ pub struct Rect {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+/// A visible top-level window, for click-to-capture.
+#[derive(Clone, Debug)]
+pub struct WindowInfo {
+    pub title: String,
+    /// Outer bounds in desktop coordinates: title bar included, client-side
+    /// shadows excluded.
+    pub rect: Rect,
 }
 
 #[cfg(target_os = "linux")]
@@ -27,7 +34,8 @@ mod linux {
     use super::Rect;
     use image::RgbaImage;
     use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::{ConnectionExt, ImageFormat, ImageOrder, Window};
+    use super::WindowInfo;
+    use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt, ImageFormat, ImageOrder, MapState, Window};
     use x11rb::rust_connection::RustConnection;
 
     pub struct Capturer {
@@ -67,6 +75,112 @@ mod linux {
         pub fn screen_rect(&self) -> Rect {
             let screen = &self.conn.setup().roots[0];
             Rect { x: 0, y: 0, width: screen.width_in_pixels as u32, height: screen.height_in_pixels as u32 }
+        }
+
+        fn atom(&self, name: &str) -> Result<Atom, String> {
+            Ok(self
+                .conn
+                .intern_atom(false, name.as_bytes())
+                .map_err(|e| e.to_string())?
+                .reply()
+                .map_err(|e| e.to_string())?
+                .atom)
+        }
+
+        /// Raw property bytes, or empty if the window doesn't have it.
+        fn property(&self, window: Window, property: Atom, type_: impl Into<Atom>) -> Vec<u8> {
+            self.conn
+                .get_property(false, window, property, type_.into(), 0, 4096)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .map(|reply| reply.value)
+                .unwrap_or_default()
+        }
+
+        fn cardinals(&self, window: Window, property: Atom) -> Vec<u32> {
+            self.conn
+                .get_property(false, window, property, AtomEnum::ANY, 0, 4096)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .and_then(|reply| reply.value32().map(|v| v.collect()))
+                .unwrap_or_default()
+        }
+
+        /// Visible top-level windows on the current workspace, topmost first.
+        pub fn windows(&self) -> Result<Vec<WindowInfo>, String> {
+            let stacking = self.atom("_NET_CLIENT_LIST_STACKING")?;
+            let current_desktop = self.atom("_NET_CURRENT_DESKTOP")?;
+            let wm_desktop = self.atom("_NET_WM_DESKTOP")?;
+            let wm_state = self.atom("_NET_WM_STATE")?;
+            let state_hidden = self.atom("_NET_WM_STATE_HIDDEN")?;
+            let wm_type = self.atom("_NET_WM_WINDOW_TYPE")?;
+            let type_desktop = self.atom("_NET_WM_WINDOW_TYPE_DESKTOP")?;
+            let type_dock = self.atom("_NET_WM_WINDOW_TYPE_DOCK")?;
+            // Window-manager decorations (title bar) around the client window.
+            let frame_extents = self.atom("_NET_FRAME_EXTENTS")?;
+            // Invisible shadow margin that GTK client-side-decorated windows include.
+            let gtk_extents = self.atom("_GTK_FRAME_EXTENTS")?;
+            let wm_name = self.atom("_NET_WM_NAME")?;
+            let utf8 = self.atom("UTF8_STRING")?;
+
+            let current = self.cardinals(self.root, current_desktop).first().copied();
+            let mut windows = Vec::new();
+            for window in self.cardinals(self.root, stacking).into_iter().rev() {
+                let Some(attrs) = self.conn.get_window_attributes(window).ok().and_then(|c| c.reply().ok()) else {
+                    continue;
+                };
+                if attrs.map_state != MapState::VIEWABLE {
+                    continue;
+                }
+                // 0xFFFFFFFF means "on all workspaces".
+                if let (Some(current), Some(&desktop)) = (current, self.cardinals(window, wm_desktop).first())
+                    && desktop != current
+                    && desktop != u32::MAX
+                {
+                    continue;
+                }
+                if self.cardinals(window, wm_state).contains(&state_hidden) {
+                    continue;
+                }
+                if self.cardinals(window, wm_type).iter().any(|t| *t == type_desktop || *t == type_dock) {
+                    continue;
+                }
+                let Some(geometry) = self.conn.get_geometry(window).ok().and_then(|c| c.reply().ok()) else {
+                    continue;
+                };
+                let Some(origin) = self
+                    .conn
+                    .translate_coordinates(window, self.root, 0, 0)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                else {
+                    continue;
+                };
+
+                let (mut x, mut y) = (origin.dst_x as i32, origin.dst_y as i32);
+                let (mut w, mut h) = (geometry.width as i32, geometry.height as i32);
+                if let [l, r, t, b] = self.cardinals(window, gtk_extents)[..] {
+                    let [l, r, t, b] = [l, r, t, b].map(|v| v as i32);
+                    (x, y, w, h) = (x + l, y + t, w - l - r, h - t - b);
+                }
+                if let [l, r, t, b] = self.cardinals(window, frame_extents)[..] {
+                    let [l, r, t, b] = [l, r, t, b].map(|v| v as i32);
+                    (x, y, w, h) = (x - l, y - t, w + l + r, h + t + b);
+                }
+                if w <= 0 || h <= 0 {
+                    continue;
+                }
+
+                let mut title = self.property(window, wm_name, utf8);
+                if title.is_empty() {
+                    title = self.property(window, AtomEnum::WM_NAME.into(), AtomEnum::STRING);
+                }
+                windows.push(WindowInfo {
+                    title: String::from_utf8_lossy(&title).into_owned(),
+                    rect: Rect { x, y, width: w as u32, height: h as u32 },
+                });
+            }
+            Ok(windows)
         }
 
         pub fn capture(&self, rect: Rect) -> Result<RgbaImage, String> {
@@ -129,6 +243,11 @@ mod windows {
             }
         }
 
+        /// Window picking is not implemented on Windows yet.
+        pub fn windows(&self) -> Result<Vec<super::WindowInfo>, String> {
+            Ok(Vec::new())
+        }
+
         pub fn capture(&self, rect: Rect) -> Result<RgbaImage, String> {
             let monitor = Monitor::from_point(rect.x, rect.y).map_err(|e| e.to_string())?;
             let frame = monitor.capture_image().map_err(|e| e.to_string())?;
@@ -140,9 +259,4 @@ mod windows {
             Ok(imageops::crop_imm(&frame, ox, oy, rect.width.min(w - ox), rect.height.min(h - oy)).to_image())
         }
     }
-}
-
-/// Convenience for one-off captures.
-pub fn capture_rect(rect: Rect) -> Result<RgbaImage, String> {
-    Capturer::new()?.capture(rect)
 }
