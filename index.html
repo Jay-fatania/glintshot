@@ -11,19 +11,24 @@
   <body>
     <main class="container">
       <h1>Glintshot</h1>
-      <p class="subtitle">Spike build: region capture</p>
+      <p class="subtitle">Spike build: region capture and recording</p>
 
-      <button id="capture-btn" type="button">Capture region</button>
-      <p class="hint">Drag to select; releasing the mouse saves. Esc cancels.</p>
+      <div id="idle-controls" class="row">
+        <button id="capture-btn" type="button">Screenshot region</button>
+        <button id="record-btn" type="button">Record region</button>
+      </div>
+      <p id="hint" class="hint">Drag to select; releasing the mouse saves or starts recording. Esc cancels.</p>
+
+      <section id="recording" hidden>
+        <p class="rec-status"><span class="rec-dot"></span> Recording <span id="rec-time">0:00</span></p>
+        <p id="rec-detail" class="hint"></p>
+        <button id="stop-btn" type="button">Stop and save</button>
+        <p class="hint">Move this window off the recorded area, or it will appear in the video.</p>
+      </section>
 
       <section id="result" hidden>
-        <h2>Last capture</h2>
-        <dl>
-          <dt>Saved to</dt><dd id="r-path"></dd>
-          <dt>Region</dt><dd id="r-size"></dd>
-          <dt>Screen grab</dt><dd id="r-capture"></dd>
-          <dt>Crop + save</dt><dd id="r-save"></dd>
-        </dl>
+        <h2 id="r-title">Last capture</h2>
+        <dl id="r-list"></dl>
       </section>
       <p id="error" class="error" hidden></p>
     </main>

@@ -3,19 +3,32 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-use tauri::ipc::Response;
 use image::{imageops, RgbaImage};
-use tauri::{AppHandle, Manager, Monitor, State, WebviewUrl, WebviewWindowBuilder};
+use serde::{Deserialize, Serialize};
+use tauri::ipc::Response;
+use tauri::{AppHandle, Emitter, Manager, Monitor, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
 
 pub mod capture;
+pub mod recording;
 
 const OVERLAY_LABEL: &str = "overlay";
 
-/// The frame captured for the current selection session.
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum CaptureMode {
+    #[default]
+    Screenshot,
+    Record,
+}
+
+/// State for the current selection session and any running recording.
 #[derive(Default)]
 struct CaptureState {
     frame: Mutex<Option<RgbaImage>>,
+    mode: Mutex<CaptureMode>,
+    /// Desktop position of the captured monitor, in physical pixels.
+    origin: Mutex<(i32, i32)>,
+    recording: Mutex<Option<recording::Recording>>,
 }
 
 #[derive(Serialize)]
@@ -45,9 +58,17 @@ fn monitor_under_cursor(app: &AppHandle) -> Result<Monitor, String> {
 }
 
 /// Hides the main window, grabs the monitor under the cursor and opens the
-/// full-screen selection overlay showing that frozen frame.
+/// full-screen selection overlay showing that frozen frame. In record mode the
+/// selection is then passed to `start_recording` instead of saved.
 #[tauri::command]
-async fn start_capture(app: AppHandle, state: State<'_, CaptureState>) -> Result<CaptureInfo, String> {
+async fn start_capture(
+    app: AppHandle,
+    state: State<'_, CaptureState>,
+    mode: CaptureMode,
+) -> Result<CaptureInfo, String> {
+    if state.recording.lock().unwrap().is_some() {
+        return Err("A recording is already running.".into());
+    }
     if let Some(main) = app.get_webview_window("main") {
         main.hide().map_err(|e| e.to_string())?;
     }
@@ -71,6 +92,8 @@ async fn start_capture(app: AppHandle, state: State<'_, CaptureState>) -> Result
         capture_ms,
     };
     *state.frame.lock().unwrap() = Some(frame);
+    *state.mode.lock().unwrap() = mode;
+    *state.origin.lock().unwrap() = (rect.x, rect.y);
 
     let scale = monitor.scale_factor();
     let x = rect.x as f64 / scale;
@@ -106,6 +129,11 @@ fn get_frame(state: State<'_, CaptureState>) -> Result<Response, String> {
     bytes.extend_from_slice(&frame.height().to_le_bytes());
     bytes.extend_from_slice(frame.as_raw());
     Ok(Response::new(bytes))
+}
+
+#[tauri::command]
+fn capture_mode(state: State<'_, CaptureState>) -> CaptureMode {
+    *state.mode.lock().unwrap()
 }
 
 /// Crops the frozen frame to the selection (in image pixels) and saves it as a
@@ -150,10 +178,78 @@ fn cancel_capture(app: AppHandle, state: State<'_, CaptureState>) {
     close_overlay(&app);
 }
 
+#[derive(Serialize)]
+struct RecordingStarted {
+    encoder: recording::Encoder,
+    width: u32,
+    height: u32,
+}
+
+/// Starts recording the selection (image pixels relative to the captured
+/// monitor). The overlay is closed first so it never appears in the video;
+/// because the caller is gone by then, the outcome is also sent to the main
+/// window as a `recording-started` or `capture-error` event.
+#[tauri::command]
+async fn start_recording(
+    app: AppHandle,
+    state: State<'_, CaptureState>,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<RecordingStarted, String> {
+    let frame = state.frame.lock().unwrap().take().ok_or("no frame captured")?;
+    let (ox, oy) = *state.origin.lock().unwrap();
+    let x = x.min(frame.width().saturating_sub(1));
+    let y = y.min(frame.height().saturating_sub(1));
+    let rect = capture::Rect {
+        x: ox + x as i32,
+        y: oy + y as i32,
+        width: width.clamp(1, frame.width() - x),
+        height: height.clamp(1, frame.height() - y),
+    };
+    drop(frame);
+
+    if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
+        let _ = overlay.destroy();
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let dir = private_dir(app.path().video_dir().map_err(|e| e.to_string())?)?;
+    let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    let started = tauri::async_runtime::spawn_blocking(move || recording::start(rect, &dir, &log_dir))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let result = started.map(|rec| {
+        let info = RecordingStarted { encoder: rec.encoder, width: rec.rect.width, height: rec.rect.height };
+        *state.recording.lock().unwrap() = Some(rec);
+        info
+    });
+    let _ = match &result {
+        Ok(info) => app.emit_to("main", "recording-started", info),
+        Err(e) => app.emit_to("main", "capture-error", e),
+    };
+    show_main(&app);
+    result
+}
+
+#[tauri::command]
+async fn stop_recording(state: State<'_, CaptureState>) -> Result<recording::Finished, String> {
+    let rec = state.recording.lock().unwrap().take().ok_or("No recording is running.")?;
+    tauri::async_runtime::spawn_blocking(move || rec.stop())
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 fn close_overlay(app: &AppHandle) {
     if let Some(overlay) = app.get_webview_window(OVERLAY_LABEL) {
         let _ = overlay.destroy();
     }
+    show_main(app);
+}
+
+fn show_main(app: &AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.show();
         let _ = main.set_focus();
@@ -162,11 +258,12 @@ fn close_overlay(app: &AppHandle) {
 
 /// ~/Pictures/Glintshot, created readable only by the current user.
 fn capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .picture_dir()
-        .map_err(|e| e.to_string())?
-        .join("Glintshot");
+    private_dir(app.path().picture_dir().map_err(|e| e.to_string())?)
+}
+
+/// `<base>/Glintshot`, created readable only by the current user.
+fn private_dir(base: PathBuf) -> Result<PathBuf, String> {
+    let dir = base.join("Glintshot");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
@@ -199,9 +296,21 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_capture,
             get_frame,
+            capture_mode,
             save_region,
-            cancel_capture
+            cancel_capture,
+            start_recording,
+            stop_recording
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Never leave FFmpeg running or a recording unfinished on quit.
+            if let RunEvent::Exit = event {
+                let rec = app.state::<CaptureState>().recording.lock().unwrap().take();
+                if let Some(rec) = rec {
+                    let _ = rec.stop();
+                }
+            }
+        });
 }

@@ -1,7 +1,7 @@
 # Glintshot
 
 Cross-platform screenshot and screen-recording app (Tauri 2 + Rust).
-This is the milestone 0 spike: region screenshots on Linux X11 plus a capture benchmark.
+This is the milestone 0 spike: region screenshots and region recording on Linux X11, plus benchmarks.
 See [docs/SPEC.md](docs/SPEC.md) for the full plan and [docs/spike-results.md](docs/spike-results.md) for measurements.
 
 ## Setup (Ubuntu 22.04)
@@ -20,13 +20,15 @@ npm install
 npm run tauri dev                      # app with hot reload
 cd src-tauri && cargo run --release --bin capture_bench 10   # capture benchmark
 scripts/record_bench.sh 15            # recording/encoder benchmark (covers primary monitor)
+cd src-tauri && cargo test --test record_smoke -- --ignored   # recorder test (needs X11)
 ```
 
-Screenshots are saved to `~/Pictures/Glintshot/` (folder mode 700, files 600).
+Screenshots are saved to `~/Pictures/Glintshot/` and recordings (MP4, 60 fps) to `~/Videos/Glintshot/`; folders are mode 700, files 600.
+Recording uses FFmpeg with Intel/AMD GPU encoding (VA-API) and falls back to libx264; set `GLINTSHOT_ENCODER=x264` to force the fallback.
 
 ## Status
 
-| Platform | Screenshot | Notes |
+| Platform | Screenshot / recording | Notes |
 |---|---|---|
 | Ubuntu X11 | Working | Direct X11 `GetImage` via x11rb |
 | Ubuntu Wayland | Not yet | Needs the ScreenCast portal; Rust PipeWire bindings don't build against Ubuntu 22.04's PipeWire 0.3.48 |

@@ -18,6 +18,7 @@ let imageHeight = 0;
 let dragStart: { x: number; y: number } | null = null;
 let selection: Rect | null = null;
 let busy = false;
+let mode: "screenshot" | "record" = "screenshot";
 
 /** Converts a mouse position (CSS pixels) to image pixels. */
 function toImage(e: MouseEvent) {
@@ -59,6 +60,8 @@ function draw() {
 }
 
 async function loadFrame() {
+  mode = await invoke<"screenshot" | "record">("capture_mode");
+  if (mode === "record") document.title = "Glintshot: select recording area";
   const buffer = await invoke<ArrayBuffer>("get_frame");
   const header = new DataView(buffer, 0, 8);
   imageWidth = header.getUint32(0, true);
@@ -77,10 +80,15 @@ async function save() {
   if (!selection || busy) return;
   busy = true;
   try {
-    const result = await invoke("save_region", { ...selection });
-    await emit("capture-saved", result);
+    if (mode === "record") {
+      // Rust closes this overlay and reports the outcome to the main window.
+      await invoke("start_recording", { ...selection });
+    } else {
+      const result = await invoke("save_region", { ...selection });
+      await emit("capture-saved", result);
+    }
   } catch (e) {
-    await emit("capture-error", `Save failed: ${e}`);
+    await emit("capture-error", mode === "record" ? `${e}` : `Save failed: ${e}`);
     await invoke("cancel_capture");
   }
 }

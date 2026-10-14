@@ -146,3 +146,32 @@ button {
 .error {
   color: #f87171;
 }
+
+#idle-controls {
+  gap: 0.75em;
+}
+
+#recording {
+  margin-top: 1em;
+}
+
+.rec-status {
+  font-size: 1.3em;
+  font-weight: 600;
+  margin: 0.2em 0;
+}
+
+.rec-dot {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: rec-blink 1s ease-in-out infinite;
+}
+
+@keyframes rec-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
