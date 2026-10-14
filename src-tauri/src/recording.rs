@@ -63,6 +63,9 @@ pub struct Finished {
 /// VA-API (useful for testing the fallback). Blocks for up to ~1.6 s while checking
 /// that FFmpeg actually started, so call it off the main thread.
 pub fn start(rect: Rect, dir: &Path, log_dir: &Path) -> Result<Recording, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("Recording is only supported on Linux (X11) in this build.".into());
+    }
     if std::env::var("XDG_SESSION_TYPE").is_ok_and(|s| s.eq_ignore_ascii_case("wayland")) {
         return Err("Recording on Wayland is not supported yet; log in with \"Ubuntu on Xorg\".".into());
     }

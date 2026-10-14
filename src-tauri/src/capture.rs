@@ -92,7 +92,8 @@ mod linux {
             }
             // 32 bpp ZPixmap is B,G,R,X in memory on little-endian servers.
             let mut rgba = Vec::with_capacity(expected);
-            for px in reply.data[..expected].chunks_exact(4) {
+            let (pixels, _) = reply.data[..expected].as_chunks::<4>();
+            for px in pixels {
                 if self.lsb_first {
                     rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
                 } else {

@@ -81,10 +81,10 @@ struct RecordingStarted {
 }
 
 fn monitor_under_cursor(app: &AppHandle) -> Result<Monitor, String> {
-    if let Ok(pos) = app.cursor_position() {
-        if let Ok(Some(m)) = app.monitor_from_point(pos.x, pos.y) {
-            return Ok(m);
-        }
+    if let Ok(pos) = app.cursor_position()
+        && let Ok(Some(m)) = app.monitor_from_point(pos.x, pos.y)
+    {
+        return Ok(m);
     }
     app.primary_monitor()
         .map_err(|e| e.to_string())?
