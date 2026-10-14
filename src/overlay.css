@@ -25,3 +25,112 @@ canvas {
   font: 12px/1.6 system-ui, sans-serif;
   pointer-events: none;
 }
+
+#toolbar {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(24, 24, 32, 0.94);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  color: #e9e7f5;
+  font: 13px/1 system-ui, sans-serif;
+  cursor: default;
+}
+
+#toolbar .group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#toolbar .group:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+#toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#toolbar button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#toolbar button.active {
+  background: #7c3aed;
+  color: #fff;
+}
+
+#toolbar button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+#toolbar .swatch {
+  min-width: 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0 2px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+#toolbar .swatch.active,
+#toolbar .swatch:hover:not(:disabled) {
+  background: var(--swatch);
+  box-shadow: 0 0 0 2px #c4b5fd;
+}
+
+#toolbar .size {
+  font-weight: 600;
+}
+
+#toolbar .action {
+  padding: 0 12px;
+}
+
+#toolbar .action.primary {
+  background: #7c3aed;
+  color: #fff;
+  font-weight: 600;
+}
+
+#toolbar .action.primary:hover {
+  background: #6d28d9;
+}
+
+.text-input {
+  position: fixed;
+  z-index: 5;
+  min-width: 120px;
+  margin: 0;
+  padding: 0;
+  border: 1px dashed rgba(196, 181, 253, 0.9);
+  background: rgba(0, 0, 0, 0.15);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-weight: 600;
+  line-height: 1.25;
+  resize: none;
+  outline: none;
+  overflow: hidden;
+}

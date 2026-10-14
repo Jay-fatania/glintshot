@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use image::{imageops, RgbaImage};
+use image::RgbaImage;
 use serde::{Deserialize, Serialize};
-use tauri::ipc::Response;
+use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{
@@ -41,6 +41,11 @@ struct CaptureState {
     origin: Mutex<(i32, i32)>,
     recording: Mutex<Option<recording::Recording>>,
     hotkeys: Mutex<Vec<HotkeyStatus>>,
+    /// How long the last screen grab took, for the result panel.
+    capture_ms: Mutex<f64>,
+    /// Kept alive for the whole run: on Linux the app itself serves the
+    /// clipboard contents, so they vanish if this is dropped.
+    clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 
 /// Tray menu entries whose enabled state follows the recording state.
@@ -65,11 +70,14 @@ struct CaptureInfo {
     capture_ms: f64,
 }
 
-#[derive(Serialize)]
-struct SaveResult {
-    path: String,
+#[derive(Clone, Serialize)]
+struct ScreenshotResult {
+    /// None when the image was only copied.
+    path: Option<String>,
+    copied: bool,
     width: u32,
     height: u32,
+    capture_ms: f64,
     save_ms: f64,
 }
 
@@ -127,6 +135,7 @@ async fn begin_capture(app: &AppHandle, mode: CaptureMode) -> Result<CaptureInfo
     *state.frame.lock().unwrap() = Some(frame);
     *state.mode.lock().unwrap() = mode;
     *state.origin.lock().unwrap() = (rect.x, rect.y);
+    *state.capture_ms.lock().unwrap() = capture_ms;
 
     let scale = monitor.scale_factor();
     WebviewWindowBuilder::new(app, OVERLAY_LABEL, WebviewUrl::App("overlay.html".into()))
@@ -179,40 +188,79 @@ fn capture_mode(state: State<'_, CaptureState>) -> CaptureMode {
     *state.mode.lock().unwrap()
 }
 
-/// Crops the frozen frame to the selection (in image pixels) and saves it as a
-/// PNG in the private Glintshot pictures folder.
+/// Receives the finished screenshot (selection with annotations drawn, as raw
+/// RGBA) from the overlay. Headers: `x-width`, `x-height`, and `x-action`
+/// (`save`: write a PNG and copy it; `copy`: clipboard only). The overlay is
+/// closed here, so the result goes to the main window as `capture-saved`.
 #[tauri::command]
-fn save_region(
+fn finish_screenshot(
     app: AppHandle,
     state: State<'_, CaptureState>,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-) -> Result<SaveResult, String> {
+    request: Request<'_>,
+) -> Result<ScreenshotResult, String> {
     let started = Instant::now();
-    let frame = state.frame.lock().unwrap().take().ok_or("no frame captured")?;
-    let x = x.min(frame.width().saturating_sub(1));
-    let y = y.min(frame.height().saturating_sub(1));
-    let width = width.clamp(1, frame.width() - x);
-    let height = height.clamp(1, frame.height() - y);
-    let region = imageops::crop_imm(&frame, x, y, width, height).to_image();
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("missing {name} header"))
+    };
+    let width: u32 = header("x-width")?.parse().map_err(|_| "bad x-width")?;
+    let height: u32 = header("x-height")?.parse().map_err(|_| "bad x-height")?;
+    let save = match header("x-action")?.as_str() {
+        "save" => true,
+        "copy" => false,
+        other => return Err(format!("unknown action {other}")),
+    };
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected raw image bytes".into());
+    };
+    let image = RgbaImage::from_raw(width, height, bytes.clone()).ok_or("image size does not match its data")?;
 
-    let dir = private_dir(app.path().picture_dir().map_err(|e| e.to_string())?)?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let path = dir.join(format!("glintshot-{stamp}.png"));
-    write_private_png(&region, &path)?;
+    let path = if save {
+        let dir = private_dir(app.path().picture_dir().map_err(|e| e.to_string())?)?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = dir.join(format!("glintshot-{stamp}.png"));
+        write_private_png(&image, &path)?;
+        Some(path.display().to_string())
+    } else {
+        None
+    };
+    copy_to_clipboard(&state, &image)?;
 
-    close_overlay(&app);
-    Ok(SaveResult {
-        path: path.display().to_string(),
+    state.frame.lock().unwrap().take();
+    let result = ScreenshotResult {
+        path,
+        copied: true,
         width,
         height,
+        capture_ms: *state.capture_ms.lock().unwrap(),
         save_ms: started.elapsed().as_secs_f64() * 1000.0,
-    })
+    };
+    let _ = app.emit_to(MAIN_LABEL, "capture-saved", &result);
+    close_overlay(&app);
+    Ok(result)
+}
+
+fn copy_to_clipboard(state: &CaptureState, image: &RgbaImage) -> Result<(), String> {
+    let mut guard = state.clipboard.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?);
+    }
+    guard
+        .as_mut()
+        .unwrap()
+        .set_image(arboard::ImageData {
+            width: image.width() as usize,
+            height: image.height() as usize,
+            bytes: std::borrow::Cow::Borrowed(image.as_raw()),
+        })
+        .map_err(|e| format!("could not copy to clipboard: {e}"))
 }
 
 #[tauri::command]
@@ -461,7 +509,7 @@ pub fn run() {
             start_capture,
             get_frame,
             capture_mode,
-            save_region,
+            finish_screenshot,
             cancel_capture,
             start_recording,
             stop_recording,

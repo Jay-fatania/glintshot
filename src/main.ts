@@ -7,10 +7,12 @@ interface CaptureInfo {
   capture_ms: number;
 }
 
-interface SaveResult {
-  path: string;
+interface ScreenshotResult {
+  path: string | null;
+  copied: boolean;
   width: number;
   height: number;
+  capture_ms: number;
   save_ms: number;
 }
 
@@ -42,7 +44,6 @@ const ENCODER_NAMES: Record<string, string> = {
   x264: "CPU (libx264)",
 };
 
-let lastCapture: CaptureInfo | null = null;
 let timer: number | undefined;
 
 function showError(message: string) {
@@ -84,7 +85,7 @@ function setRecording(active: boolean) {
 async function capture(mode: "screenshot" | "record") {
   $("error").hidden = true;
   try {
-    lastCapture = await invoke<CaptureInfo>("start_capture", { mode });
+    await invoke<CaptureInfo>("start_capture", { mode });
   } catch (e) {
     showError(`Capture failed: ${e}`);
   }
@@ -147,18 +148,16 @@ window.addEventListener("DOMContentLoaded", () => {
   $("stop-btn").addEventListener("click", stopRecording);
 
   // The overlay window reports results back here.
-  listen<SaveResult>("capture-saved", ({ payload }) => {
-    showResult("Last screenshot", [
-      ["Saved to", payload.path],
+  listen<ScreenshotResult>("capture-saved", ({ payload }) => {
+    const rows: [string, string][] = [];
+    if (payload.path) rows.push(["Saved to", payload.path]);
+    if (payload.copied) rows.push(["Clipboard", "Copied"]);
+    rows.push(
       ["Region", `${payload.width} × ${payload.height} px`],
-      [
-        "Screen grab",
-        lastCapture
-          ? `${lastCapture.capture_ms.toFixed(1)} ms (${lastCapture.width} × ${lastCapture.height})`
-          : "–",
-      ],
-      ["Crop + save", `${payload.save_ms.toFixed(1)} ms`],
-    ]);
+      ["Screen grab", `${payload.capture_ms.toFixed(1)} ms`],
+      [payload.path ? "Save + copy" : "Copy", `${payload.save_ms.toFixed(1)} ms`],
+    );
+    showResult("Last screenshot", rows);
   });
   listen<RecordingStarted>("recording-started", ({ payload }) => {
     $("error").hidden = true;
