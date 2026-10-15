@@ -78,7 +78,7 @@ Gaps: there are no automated tests for the frontend (overlay, editor, settings U
 | ED-02 | M | P0 | Draw a solid redaction over text. Save. Open the PNG. | The redacted area is fully black. The underlying text cannot be read in the saved file. |
 | ED-03 | M | P0 | Draw a pixelate region over text. Save. Open the PNG. | Text is not readable from the saved file. No blur tool is offered (SPEC section 6 item 6). |
 | ED-04 | M | P0 | Undo and redo across mixed shapes, then edit more. | Undo and redo restore the exact prior state. No shapes disappear or duplicate. |
-| ED-05 | M | P1 | Numbered markers: place 3, delete the middle one, place another. | **Known risk:** `nextMarkerNumber` returns the marker count + 1 (`src/annotations.ts:64`), so the new marker is numbered 3 and duplicates the existing one. Expected: numbers stay unique. If the duplicate appears, log a defect. |
+| ED-05 | M | P1 | Numbered markers: place 3, delete the middle one, place another. | Expected: numbers stay unique. `nextMarkerNumber` now returns the highest existing number + 1 (`src/annotations.ts`), so the new marker is numbered 4. Regression check for the fix. |
 | ED-06 | M | P1 | Change colour and size, then draw. | New shapes use the new settings. Existing shapes are not changed unless selected. |
 | ED-07 | M | P1 | Pixelate near the image edge and at the image corner. | No crash and no pixels from outside the image. |
 | ED-08 | M | P2 | Text tool: empty text, very long text, Unicode text (e.g. emoji, accented letters). | Text renders. Empty text is not saved as an empty shape. |
@@ -94,9 +94,9 @@ Gaps: there are no automated tests for the frontend (overlay, editor, settings U
 | OUT-05 | I | P0 | Check permissions of a folder created by Glintshot and of a saved screenshot. | Folder is mode 700 (`ensure_dir`). Screenshot is mode 600 (`write_private_png`). Check with `ls -ld` and `ls -l`. |
 | OUT-06 | I | P0 | Pick an existing folder (e.g. `~/Desktop`) as the save folder. | Its permissions do not change (settings.rs `ensure_dir` only applies to folders Glintshot creates). |
 | OUT-07 | M | P1 | Save to a folder that is read-only. | Error is shown in the overlay and the clipboard is not changed (`finish_screenshot` returns before copying). Overlay stays open. |
-| OUT-07b | M | P1 | Save succeeds but the clipboard fails (e.g. no clipboard manager on a headless session). | **Known gap:** the PNG is already written, the copy error is returned, and the overlay stays open. Expected: the error says the file was saved. Log a defect if the message does not say so. |
+| OUT-07b | M | P1 | Save succeeds but the clipboard fails (e.g. no clipboard manager on a headless session). | Expected: the PNG is kept, the overlay closes, and a `capture-error` says "Saved to <path>, but the clipboard copy failed". The result has `copied: false`, so the main window does not show a Clipboard row. Fixed in `finish_screenshot`. |
 | OUT-08 | M | P1 | Enter action set to "copy" in Settings. Press Enter. | Behaves as Ctrl+C. Ctrl+S still saves. |
-| OUT-09 | M | P1 | Two saves in the same millisecond. | **Known risk:** filenames use `glintshot-{millis}.png` (`src-tauri/src/lib.rs`, `finish_screenshot`), so a collision would overwrite via `rename`. Expected: distinct files. Test by scripting two saves back to back. |
+| OUT-09 | M | P1 | Two saves in the same millisecond. | Expected: distinct files. `unique_png_path` adds a `-2`, `-3`, ... suffix when the name is taken (unit test `unique_png_path_avoids_existing_files`). Also check two saves back to back by script. |
 
 ### 5.4 Tray and window lifecycle
 

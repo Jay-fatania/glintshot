@@ -61,8 +61,11 @@ export class Annotations {
     return this.undone.length > 0;
   }
 
+  /** One more than the highest marker number, so numbers stay unique after a delete. */
   nextMarkerNumber() {
-    return this.shapes.filter((s) => s.kind === "marker").length + 1;
+    let highest = 0;
+    for (const s of this.shapes) if (s.kind === "marker" && s.n > highest) highest = s.n;
+    return highest + 1;
   }
 }
 

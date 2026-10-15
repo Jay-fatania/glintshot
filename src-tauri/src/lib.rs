@@ -289,22 +289,31 @@ fn finish_screenshot(
     let path = if save {
         let dir = current_settings(&app).screenshot_dir;
         settings::ensure_dir(&dir)?;
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let path = dir.join(format!("glintshot-{stamp}.png"));
+        let path = unique_png_path(&dir);
         write_private_png(&image, &path)?;
         Some(path.display().to_string())
     } else {
         None
     };
-    copy_to_clipboard(&state, &image)?;
+    // Once the file is saved, a clipboard failure is reported without losing
+    // the save; the overlay closes and the user sees the path.
+    let copied = match copy_to_clipboard(&state, &image) {
+        Ok(()) => true,
+        Err(e) if path.is_some() => {
+            let _ = app.emit_to(
+                MAIN_LABEL,
+                "capture-error",
+                format!("Saved to {}, but the clipboard copy failed: {e}", path.as_deref().unwrap_or("")),
+            );
+            false
+        }
+        Err(e) => return Err(e),
+    };
 
     state.frame.lock().unwrap().take();
     let result = ScreenshotResult {
         path,
-        copied: true,
+        copied,
         width,
         height,
         capture_ms: *state.capture_ms.lock().unwrap(),
@@ -599,6 +608,22 @@ fn init_settings(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// A new screenshot path in `dir` that does not exist yet. Names use the
+/// current time in milliseconds; a suffix is added if that name is taken.
+fn unique_png_path(dir: &Path) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let mut path = dir.join(format!("glintshot-{stamp}.png"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("glintshot-{stamp}-{n}.png"));
+        n += 1;
+    }
+    path
+}
+
 /// Writes to a temporary file first, then renames, so a crash never leaves a
 /// half-written screenshot behind.
 fn write_private_png(image: &RgbaImage, path: &Path) -> Result<(), String> {
@@ -676,4 +701,21 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_png_path_avoids_existing_files() {
+        let dir = std::env::temp_dir().join(format!("glintshot-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let first = unique_png_path(&dir);
+        fs::write(&first, b"x").unwrap();
+        let second = unique_png_path(&dir);
+        assert_ne!(first, second);
+        assert!(!second.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
