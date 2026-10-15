@@ -165,7 +165,7 @@ Recording is in the repo already, but the full Phase 2 feature set is not part o
 
 ## 7. Gaps and next steps
 
-1. Add frontend unit tests (Vitest) for the annotation geometry and the editor's undo/redo. The geometry in `src/annotations.ts` is pure and easy to test.
+1. Done: Vitest unit tests for `src/annotations.ts` (rectangle geometry, undo/redo, marker numbering), run by `npm test` in CI. Editor UI tests are still open.
 2. Add a Tauri integration test or a scripted E2E run (WebDriver) for the settings save/load flow.
 3. Add an automated permissions check for OUT-05 and SET-06 in `record_smoke`-style Rust tests (Linux only).
 4. Record manual test results in a table per run, with the commit SHA and environment from section 2.
