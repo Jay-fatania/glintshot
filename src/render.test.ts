@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { renderShapes, type Shape } from "./annotations";
+import { afterEach, describe, expect, it } from "vitest";
+import { renderShapes, textShapeFrom, type Shape } from "./annotations";
 
 // Records the canvas calls made while drawing, with the style that was active
 // at the moment of each call. Enough to check what a shape paints without a DOM.
@@ -25,6 +25,7 @@ function fakeContext() {
     fillRect: record("fillRect"),
     fillText: record("fillText"),
     strokeText: record("strokeText"),
+    drawImage: record("drawImage"),
   } as Record<string, unknown>;
   Object.defineProperties(ctx, {
     fillStyle: { get: () => state.fillStyle, set: (v) => (state.fillStyle = v), enumerable: true },
@@ -34,6 +35,53 @@ function fakeContext() {
 }
 
 const source = {} as HTMLCanvasElement;
+
+// Pixelate creates a scratch canvas with document.createElement. Stub it so the
+// test can read the scratch size and what was drawn into it.
+function stubDocument() {
+  const made: { width: number; height: number; draws: unknown[][] }[] = [];
+  (globalThis as { document?: unknown }).document = {
+    createElement: () => {
+      const canvas = {
+        width: 0,
+        height: 0,
+        draws: [] as unknown[][],
+        getContext: () => ({ drawImage: (...args: unknown[]) => canvas.draws.push(args) }),
+      };
+      made.push(canvas);
+      return canvas;
+    },
+  };
+  return made;
+}
+
+afterEach(() => {
+  delete (globalThis as { document?: unknown }).document;
+});
+
+describe("textShapeFrom", () => {
+  const at = { x: 3, y: 4 };
+
+  it("returns no shape for empty or whitespace-only text (ED-08)", () => {
+    expect(textShapeFrom("", at, "#f00", 16)).toBeNull();
+    expect(textShapeFrom("   \n\t ", at, "#f00", 16)).toBeNull();
+  });
+
+  it("drops trailing whitespace but keeps leading spaces and inner lines", () => {
+    expect(textShapeFrom("  hi\nthere  \n", at, "#f00", 16)).toEqual({
+      kind: "text",
+      at,
+      text: "  hi\nthere",
+      color: "#f00",
+      size: 16,
+    });
+  });
+
+  it("keeps Unicode text intact (ED-08)", () => {
+    const shape = textShapeFrom("café 🙂 日本", at, "#fff", 22);
+    expect(shape).toMatchObject({ text: "café 🙂 日本" });
+  });
+});
 
 describe("renderShapes", () => {
   it("paints redaction as solid black over the normalised rectangle", () => {
@@ -75,6 +123,26 @@ describe("renderShapes", () => {
     renderShapes(ctx, [shape], source);
     const lines = calls.filter((c) => c.name === "fillText").map((c) => c.args[0]);
     expect(lines).toEqual(["a", "b"]);
+  });
+
+  it("pixelates a region by downscaling it, then stretching the blocks back over it", () => {
+    const made = stubDocument();
+    const { ctx, calls } = fakeContext();
+    const shape: Shape = { kind: "pixelate", a: { x: 10, y: 5 }, b: { x: 40, y: 25 }, color: "#f00", width: 2 };
+    renderShapes(ctx, [shape], source);
+    // 30x20 region with 14px blocks: ceil(30/14) = 3 columns, ceil(20/14) = 2 rows.
+    expect(made[0].width).toBe(3);
+    expect(made[0].height).toBe(2);
+    expect(made[0].draws[0]).toEqual([source, 10, 5, 30, 20, 0, 0, 3, 2]);
+    expect(calls.find((c) => c.name === "drawImage")?.args).toEqual([made[0], 0, 0, 3, 2, 10, 5, 30, 20]);
+  });
+
+  it("rounds fractional pixelate coordinates to whole image pixels", () => {
+    const made = stubDocument();
+    const { ctx } = fakeContext();
+    const shape: Shape = { kind: "pixelate", a: { x: 10.4, y: 5.6 }, b: { x: 40.6, y: 25.4 }, color: "#f00", width: 2 };
+    renderShapes(ctx, [shape], source);
+    expect(made[0].draws[0]).toEqual([source, 10, 6, 30, 20, 0, 0, 3, 2]);
   });
 
   it("draws each shape in order", () => {

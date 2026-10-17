@@ -25,6 +25,16 @@ export type Shape =
 /** Pixelation block size in image pixels: large enough that text can't be read back. */
 const PIXEL_BLOCK = 14;
 
+/**
+ * The text shape to add when the text box is committed, or null when there is
+ * nothing to keep. Trailing whitespace is dropped; leading and inner lines stay.
+ */
+export function textShapeFrom(raw: string, at: Point, color: string, size: number): Shape | null {
+  const text = raw.replace(/\s+$/, "");
+  if (!text) return null;
+  return { kind: "text", at, text, color, size };
+}
+
 export function rectFrom(a: Point, b: Point): Rect {
   return {
     x: Math.min(a.x, b.x),

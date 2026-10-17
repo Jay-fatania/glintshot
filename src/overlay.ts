@@ -9,6 +9,7 @@ import {
   type Tool,
   rectFrom,
   renderShapes,
+  textShapeFrom,
 } from "./annotations";
 
 const frameCanvas = document.getElementById("frame") as HTMLCanvasElement;
@@ -348,16 +349,13 @@ function commitText() {
   const input = textInput;
   if (!input) return;
   textInput = null;
-  const text = input.value.replace(/\s+$/, "");
-  if (text) {
-    annotations.add({
-      kind: "text",
-      at: { x: Number(input.dataset.x), y: Number(input.dataset.y) },
-      text,
-      color,
-      size: Math.round(SIZES.text[sizeLevel] * scale()),
-    });
-  }
+  const shape = textShapeFrom(
+    input.value,
+    { x: Number(input.dataset.x), y: Number(input.dataset.y) },
+    color,
+    Math.round(SIZES.text[sizeLevel] * scale()),
+  );
+  if (shape) annotations.add(shape);
   input.remove();
   syncToolbar();
   draw();
